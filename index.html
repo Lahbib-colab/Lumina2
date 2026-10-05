@@ -179,6 +179,7 @@ svg{display:block}
 .ptop strong{font:italic 600 1.1rem var(--serif);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ptop .ico{background:#00000066;border:1px solid #ffffff44}
 .pmsg{position:absolute;inset:0;display:grid;place-content:center;gap:10px;text-align:center;color:var(--mute);pointer-events:none;padding:20px}
+.pmsg button{pointer-events:auto;margin:8px auto 0}
 .spin{width:44px;height:3px;margin:0 auto;border-radius:3px;background:linear-gradient(90deg,transparent,var(--beam),transparent);animation:slide 1.1s ease-in-out infinite}
 @keyframes slide{0%{transform:translateX(-24px);opacity:.2}50%{opacity:1}100%{transform:translateX(24px);opacity:.2}}
 
@@ -310,7 +311,7 @@ dialog::backdrop{background:rgba(4,6,10,.8)}
     <p class="err" id="aErr" role="alert"></p>
     <div class="acts">
       <button type="button" class="btn line" id="aCancel">Annuler</button>
-      <button type="submit" class="btn main" id="aSave">Ajouter</button>
+      <button type="submit" class="btn main" id="aSave">Ajouter et lire</button>
     </div>
   </form>
 </dialog>
@@ -1089,7 +1090,8 @@ const MUX_URLS = ['https://cdnjs.cloudflare.com/ajax/libs/mux.js/7.0.2/mux.min.j
 async function ensureHlsJs() { if (!window.Hls) await loadScript(HLS_URLS); return window.Hls; }
 
 function pmsg(html, err) { const p = $('pmsg'); p.hidden = !html; p.innerHTML = html || ''; p.style.color = err ? 'var(--alert)' : ''; }
-async function play(it) {
+let onDirectFail = null;
+async function play(it, opts = {}) {
   if (it.mock) { toast("Cette affiche est une maquette : ajoutez votre vidéo avec le bouton + en haut de la page.", true); return; }
   const rec = offlineRec(it);
   closeDetail();
@@ -1098,6 +1100,19 @@ async function play(it) {
   $('player').hidden = false; document.body.classList.add('lock'); $('ptitle').textContent = it.title;
   pmsg('<div class="spin"></div><span>Chargement…</span>');
   const v = $('video');
+  let failed = false;
+  // Lecture directe impossible (source bloquée) : le serveur prépare un MP4, puis la lecture démarre toute seule.
+  onDirectFail = rec ? null : (why) => {
+    if (failed || cur !== it) return; failed = true;
+    if (srvCfg().base && !opts.noFallback && it.src) {
+      closePlayer(true);
+      toast('Lecture directe impossible : le serveur prépare la vidéo en MP4, la lecture démarrera ensuite.');
+      downloadOffline(it, { thenPlay: true });
+    } else {
+      pmsg(`<span>${why}</span><span>Un serveur LUMINA permet de contourner ce blocage.</span>` + (srvCfg().base ? '' : '<button type="button" class="btn main" id="pmsgSrv">Configurer un serveur</button>'), true);
+      const bt = $('pmsgSrv'); if (bt) bt.onclick = () => { closePlayer(true); $('srvBtn').onclick(); };
+    }
+  };
   try {
     if (rec) { playBlobUrl = URL.createObjectURL(rec.blob); v.src = playBlobUrl; }
     else if (it.srcType === 'hls') {
@@ -1106,15 +1121,18 @@ async function play(it) {
         const Hls = await ensureHlsJs();
         if (!Hls || !Hls.isSupported()) throw new Error('hls');
         hlsInst = new Hls({ maxBufferLength: 30 }); hlsInst.loadSource(it.src); hlsInst.attachMedia(v);
-        hlsInst.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) pmsg('<span>Lecture impossible : la source est injoignable ou bloquée.</span>', true); });
+        hlsInst.on(Hls.Events.ERROR, (e, d) => { if (d.fatal && onDirectFail) onDirectFail('La source bloque la lecture depuis un navigateur ou est injoignable.'); });
       }
     } else v.src = it.src;
     const pr = state.progress[it.id];
     if (pr && pr.t > 15 && pr.t < pr.d * .95) v.addEventListener('loadedmetadata', () => { v.currentTime = pr.t; }, { once: true });
     v.play().catch(() => {});
-  } catch (e) { pmsg('<span>Lecture impossible : le lecteur HLS n\'a pas pu être chargé (connexion requise la première fois).</span>', true); }
+  } catch (e) {
+    if (onDirectFail) onDirectFail('Le lecteur n\'a pas pu démarrer (source bloquée, ou connexion nécessaire la première fois).');
+    else pmsg('<span>Lecture impossible.</span>', true);
+  }
   wakeUi();
-  $('pback').focus();
+  if (!$('player').hidden) $('pback').focus();
 }
 function closePlayer(silent) {
   const v = $('video'); v.pause();
@@ -1130,7 +1148,7 @@ const vid = $('video');
 vid.addEventListener('loadeddata', () => pmsg(''));
 vid.addEventListener('playing', () => pmsg(''));
 vid.addEventListener('waiting', () => { if (!vid.paused) pmsg('<div class="spin"></div>'); });
-vid.addEventListener('error', () => { if (cur && vid.getAttribute('src')) pmsg('<span>Lecture impossible : la source est injoignable ou bloquée par le navigateur.</span>', true); });
+vid.addEventListener('error', () => { if (cur && vid.getAttribute('src')) { if (onDirectFail) onDirectFail('La lecture a échoué : la source est injoignable ou bloquée par le navigateur.'); else pmsg('<span>Lecture impossible : format non pris en charge par ce navigateur.</span>', true); } });
 vid.addEventListener('timeupdate', () => {
   if (!cur || !vid.duration) return;
   if (Date.now() - lastSave > 4000) { lastSave = Date.now(); state.progress[cur.id] = { t: vid.currentTime, d: vid.duration, at: Date.now() }; store.set('lumina.progress', state.progress); }
@@ -1239,7 +1257,7 @@ function friendly(e, it) {
   return e.message || 'Erreur inconnue.';
 }
 
-async function downloadOffline(it) {
+async function downloadOffline(it, opts = {}) {
   if (dlCtrl) { toast('Un téléchargement est déjà en cours.', true); return; }
   dlCtrl = new AbortController();
   $('dl').hidden = false; $('dlTitle').textContent = it.title; setDl(0, 'Préparation…');
@@ -1261,6 +1279,7 @@ async function downloadOffline(it) {
     await DB.put({ id: 'cat-' + it.id, catalogId: it.id, title: it.title, blob: r.blob, poster, size: r.blob.size, duration: r.duration, height: r.height, createdAt: Date.now() });
     await loadOffline(); render(true);
     toast(`« ${it.title} » est converti en MP4 et disponible hors-ligne.`);
+    if (opts.thenPlay) play(itemById(it.id) || it, { noFallback: true });
   } catch (e) {
     if (e.name === 'AbortError') toast('Téléchargement annulé.'); else toast(friendly(e, it), true);
   } finally { dlCtrl = null; $('dl').hidden = true; }
@@ -1328,7 +1347,8 @@ async function runExtract() {
     return ext;
   } catch (e) {
     ext = null; sel = '';
-    showFound(esc(friendly(e)), 'bad');
+    showFound(esc(friendly(e)) + (srvCfg().base ? '' : '<div><button type="button" class="mini" id="aSrv">Configurer un serveur</button></div>'), 'bad');
+    const sb = $('aSrv'); if (sb) sb.onclick = () => { dlg.close(); $('srvBtn').onclick(); };
     return null;
   } finally { $('aExtract').disabled = false; }
 }
@@ -1357,7 +1377,7 @@ $('addForm').addEventListener('submit', async (e) => {
     state.user.push(it); store.set('lumina.user', state.user);
     dlg.close(); render(true);
     toast(`« ${it.title} » ajouté. Flux : ${hostOf(cand.url)}`);
-    if (wantOffline) downloadOffline(it);
+    if (wantOffline) downloadOffline(it, { thenPlay: true }); else play(it);
   } finally { $('aSave').disabled = false; }
 });
 
