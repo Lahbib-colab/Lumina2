@@ -2,7 +2,7 @@
   "name": "LUMINA",
   "short_name": "LUMINA",
   "description": "Ma plateforme de streaming, avec mode hors-ligne",
-  "start_url": "./?intro=0",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#0a0d14",
