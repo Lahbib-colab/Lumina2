@@ -382,8 +382,12 @@ dialog::backdrop{background:rgba(4,6,10,.8)}
     <label for="sTok">Jeton (LUMINA_TOKEN)</label>
     <input id="sTok" type="password" autocomplete="off">
     <label class="chk"><input type="checkbox" id="sAlways"> Toujours convertir via le serveur</label>
+    <label for="sMyProxy">Mon proxy personnel (Cloudflare Worker)</label>
+    <input id="sMyProxy" type="url" inputmode="url" spellcheck="false" placeholder="https://lumina-proxy.votre-nom.workers.dev">
+    <label for="sMyKey">Clé du proxy (si vous en avez défini une)</label>
+    <input id="sMyKey" type="password" autocomplete="off">
     <label class="chk"><input type="checkbox" id="sProxy"> Sans serveur, lire les pages via un proxy public (api.allorigins.win)</label>
-    <div class="xrow"><button type="button" class="mini" id="sProxyTest">Tester le proxy public</button></div>
+    <div class="xrow"><button type="button" class="mini" id="sProxyTest">Tester les proxys</button></div>
     <p class="err" id="sMsg" role="status"></p>
     <div class="acts">
       <button type="button" class="btn line" id="sTest">Tester</button>
@@ -1363,6 +1367,10 @@ async function serverConvert(it) {
 /** Traduit l'échec du proxy en cause probable, en clair. */
 function proxyHint(msg) {
   const m = String(msg);
+  if (/mon proxy : HTTP 401/.test(m)) return "La clé de votre proxy personnel est refusée : vérifiez-la dans l'icône serveur.";
+  if (/mon proxy : HTTP 403/.test(m)) return "Votre proxy personnel refuse cette origine : ajoutez votre site à ORIGINES_AUTORISEES dans le Worker, ou définissez une clé.";
+  if (/mon proxy : HTTP 415/.test(m)) return 'Votre proxy ne transmet que des pages et des images, pas des vidéos.';
+  if (/mon proxy : (HTTP 400|Failed to fetch|Load failed)/.test(m)) return "Votre proxy personnel est injoignable ou refuse cet accès (adresse ou clé incorrecte) : vérifiez-les dans l'icône serveur.";
   if (/HTTP 429/.test(m)) return 'Le proxy public est saturé (trop de requêtes) : réessayez dans une minute.';
   if (/HTTP 40[13]/.test(m)) return 'Le site refuse l\'accès au proxy (protection contre les robots ou connexion requise).';
   if (/HTTP 404|HTTP 410/.test(m)) return 'Le site répond « introuvable » : vérifiez l\'adresse de la page.';
@@ -1461,10 +1469,23 @@ $('aCapBtn').onclick = openCapDialog;
 
 /* ================================ Extraction du flux ================================ */
 const proxyOn = () => store.get('lumina.proxy', true) !== false;
-/** Lit le HTML d'une page : accès direct (si la source autorise le CORS), sinon proxy public. */
-async function pageText(url) {
-  try { const r = await fetch(url); if (r.ok) return { text: await r.text(), via: 'direct' }; } catch (e) { /* CORS : on essaie le proxy */ }
-  if (proxyOn() && typeof recupererHtmlProxy === 'function') return { text: await recupererHtmlProxy(url), via: 'proxy' };
+const myProxy = () => { const m = store.get('lumina.myproxy', {}); return { url: String(m.url || '').trim().replace(/\/+$/, ''), key: String(m.key || '').trim() }; };
+/** Proxys essayés dans l'ordre : le vôtre (Cloudflare Worker), puis le proxy public si l'option est cochée. */
+function proxyChain() {
+  const chain = [], m = myProxy();
+  if (m.url) chain.push({ nom: 'mon proxy', url: (u, ref) => m.url + '/?url=' + encodeURIComponent(u) + (ref ? '&referer=' + encodeURIComponent(ref) : '') + (m.key ? '&key=' + encodeURIComponent(m.key) : '') });
+  if (proxyOn() && typeof extraireFilmOptions !== 'undefined') chain.push(...extraireFilmOptions.proxies);
+  return chain;
+}
+const proxyLabel = (nom) => (nom === 'mon proxy' ? 'votre proxy personnel' : 'le proxy public api.allorigins.win');
+/** Lit le HTML d'une page : accès direct (si la source autorise le CORS), sinon proxys. `referer` = page d'origine. */
+async function pageText(url, referer) {
+  try { const r = await fetch(url); if (r.ok) return { text: await r.text(), via: 'direct' }; } catch (e) { /* CORS : on essaie les proxys */ }
+  const chain = proxyChain();
+  if (chain.length && typeof recupererHtmlProxy === 'function') {
+    const text = await recupererHtmlProxy(url, { proxies: chain, referer });
+    return { text, via: 'proxy', viaNom: window.extraireFilmDernierProxy || '' };
+  }
   throw Object.assign(new Error('cors'), { code: 'cors' });
 }
 const isDirect = (u) => /\.(m3u8|mp4)(\?|#|$)/i.test(u);
@@ -1476,11 +1497,11 @@ async function extractSource(pageUrl) {
   try {
     const first = await pageText(u.href);
     const out = extractFromHtml(first.text, u.href);
-    let via = first.via;
+    let via = first.via, viaNom = first.viaNom || '';
     if (!out.candidates.some((c) => c.type === 'hls')) {
       for (const f of out.iframes.slice(0, 3)) {
         try {
-          const sub = extractFromHtml((await pageText(f)).text, f);
+          const sub = extractFromHtml((await pageText(f, u.href)).text, f);
           sub.candidates.forEach((c) => { if (!out.candidates.some((x) => x.url === c.url)) out.candidates.push({ ...c, via: 'iframe' }); });
           for (const k of ['title', 'poster', 'description', 'year', 'duration']) if (!out[k] && sub[k]) out[k] = sub[k];
           if (!out.genres.length && sub.genres.length) out.genres = sub.genres;
@@ -1488,7 +1509,7 @@ async function extractSource(pageUrl) {
       }
       out.candidates = sortCandidates(out.candidates);
     }
-    return { pageUrl: u.href, title: out.title, poster: out.poster, description: out.description, year: out.year, genres: out.genres, duration: out.duration, candidates: out.candidates, via };
+    return { pageUrl: u.href, title: out.title, poster: out.poster, description: out.description, year: out.year, genres: out.genres, duration: out.duration, candidates: out.candidates, via, viaNom };
   } catch (e) {
     if (serverErr) throw serverErr;
     throw e;
@@ -1515,7 +1536,7 @@ function previewHtml(x) {
 function renderFound() {
   if (!ext || !ext.candidates.length) { showFound(''); $('aOffWrap').hidden = true; return; }
   const rows = ext.candidates.map((c, i) => `<label class="cand"><input type="radio" name="cand" value="${i}" ${c.url === sel ? 'checked' : ''}><span class="badge">${c.type === 'hls' ? 'HLS' : 'MP4'}</span><code title="${esc(c.url)}">${esc(c.url)}</code><button type="button" class="mini" data-copy="${i}">Copier</button></label>`).join('');
-  const noteVia = ext.via === 'proxy' ? '<div class="pm">Page lue via le proxy public api.allorigins.win.</div>' : ext.via === 'capture' ? '<div class="pm">Flux capturé depuis la page ouverte dans votre navigateur.</div>' : '';
+  const noteVia = ext.via === 'proxy' ? '<div class="pm">Page lue via ' + proxyLabel(ext.viaNom) + '.</div>' : ext.via === 'capture' ? '<div class="pm">Flux capturé depuis la page ouverte dans votre navigateur.</div>' : '';
   showFound(previewHtml(ext) + noteVia + `<div>${ext.candidates.length > 1 ? ext.candidates.length + ' flux trouvés, choisissez-en un :' : 'Flux vidéo trouvé :'}</div>` + rows, 'ok');
   $('aOffWrap').hidden = false;
   $('aFound').querySelectorAll('input[name=cand]').forEach((r) => r.onchange = () => { sel = ext.candidates[+r.value].url; });
@@ -1558,7 +1579,7 @@ async function coverToDataUrl(url, pageUrl) {
   const grab = async () => {
     try { const r = await fetch(url, { referrerPolicy: 'no-referrer' }); if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return await r.blob(); } catch (e) { /* CORS : on passe par le serveur */ }
     if (srvCfg().base) { try { const r = await srvFetch('/api/image?url=' + encodeURIComponent(url) + (pageUrl ? '&referer=' + encodeURIComponent(pageUrl) : '')); if (r.ok) return await r.blob(); } catch (e) { /* ignore */ } }
-    if (!srvCfg().base && proxyOn()) { try { const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url)); if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return await r.blob(); } catch (e) { /* ignore */ } }
+    if (!srvCfg().base) { for (const px of proxyChain()) { if (px.json) continue; try { const r = await fetch(px.url(url, pageUrl)); if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return await r.blob(); } catch (e) { /* proxy suivant */ } } }
     return null;
   };
   const blob = await Promise.race([grab(), sleep(10000).then(() => null)]);
@@ -1693,16 +1714,25 @@ function sMsg(t, ok) { const m = $('sMsg'); m.textContent = t; m.className = 'er
 $('srvBtn').onclick = () => {
   const c = srvCfg(), saved = store.get('lumina.server', {});
   $('sUrl').value = saved.url || ''; $('sUrl').placeholder = autoServer ? 'Laisser vide : ce serveur est utilisé automatiquement' : 'http://192.168.1.20:8787';
-  $('sTok').value = c.token; $('sAlways').checked = c.always; $('sProxy').checked = proxyOn(); sMsg(autoServer ? 'Ce serveur LUMINA est détecté automatiquement.' : '', autoServer);
+  $('sTok').value = c.token; $('sAlways').checked = c.always; $('sProxy').checked = proxyOn(); $('sMyProxy').value = myProxy().url; $('sMyKey').value = myProxy().key; sMsg(autoServer ? 'Ce serveur LUMINA est détecté automatiquement.' : '', autoServer);
   sdlg.showModal(); $('sTok').focus();
 };
 $('sClose').onclick = () => sdlg.close();
-$('srvForm').addEventListener('submit', (e) => { e.preventDefault(); store.set('lumina.proxy', $('sProxy').checked); store.set('lumina.server', { url: $('sUrl').value.trim(), token: $('sTok').value.trim(), always: $('sAlways').checked }); markServer(); sdlg.close(); toast(srvCfg().base ? 'Réglages du serveur enregistrés.' : 'Serveur désactivé.'); });
+$('srvForm').addEventListener('submit', (e) => { e.preventDefault(); store.set('lumina.proxy', $('sProxy').checked); store.set('lumina.myproxy', { url: $('sMyProxy').value.trim(), key: $('sMyKey').value.trim() }); store.set('lumina.server', { url: $('sUrl').value.trim(), token: $('sTok').value.trim(), always: $('sAlways').checked }); markServer(); sdlg.close(); toast(srvCfg().base ? 'Réglages du serveur enregistrés.' : 'Serveur désactivé.'); });
 $('sProxyTest').onclick = async () => {
   if (typeof recupererHtmlProxy !== 'function') { sMsg("Le module d'extraction (extraire-film.js) n'est pas chargé : déposez-le à côté de index.html."); return; }
-  sMsg('Test du proxy public…');
-  try { await recupererHtmlProxy('https://example.com/', { delaiMs: 12000 }); sMsg('Le proxy public répond depuis cet appareil. Si une page échoue, c\'est donc le site visé qui le refuse.', true); }
-  catch (e) { sMsg('Le proxy public ne répond pas : ' + proxyHint(e.message) + ' (' + String(e.message).replace(/^Impossible de télécharger la page \(|\)\.$/g, '') + ')'); }
+  store.set('lumina.myproxy', { url: $('sMyProxy').value.trim(), key: $('sMyKey').value.trim() }); store.set('lumina.proxy', $('sProxy').checked);
+  const chain = proxyChain();
+  if (!chain.length) { sMsg('Aucun proxy activé : renseignez votre proxy personnel ou cochez le proxy public.'); return; }
+  sMsg('Test en cours…');
+  const lignes = []; let tousOk = true;
+  // Deux groupes : votre proxy, puis le proxy public (ses points d'accès comptent pour un seul : il suffit qu'un réponde).
+  const groupes = [['Votre proxy personnel', chain.filter((px) => px.nom === 'mon proxy')], ['Proxy public', chain.filter((px) => px.nom !== 'mon proxy')]].filter(([, g]) => g.length);
+  for (const [nom, g] of groupes) {
+    try { await recupererHtmlProxy('https://example.com/', { proxies: g, delaiMs: 12000 }); lignes.push(nom + ' : OK.'); }
+    catch (e) { tousOk = false; lignes.push(nom + ' : ' + proxyHint(e.message) + ' (' + String(e.message).replace(/^Impossible de télécharger la page \(|\)\.$/g, '') + ')'); }
+  }
+  sMsg(lignes.join(' '), tousOk);
 };
 $('sTest').onclick = async () => {
   store.set('lumina.server', { url: $('sUrl').value.trim(), token: $('sTok').value.trim(), always: $('sAlways').checked });

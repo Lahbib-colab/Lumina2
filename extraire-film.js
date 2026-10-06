@@ -49,7 +49,7 @@
     maxIframes: 3,
     /**
      * Proxys essayés dans l'ordre, jusqu'au premier qui répond.
-     * `url(u)` construit l'adresse du proxy ; `json: true` si la réponse est enveloppée dans { contents }.
+     * `url(u, referer)` construit l'adresse du proxy (referer = page d'origine, facultatif) ; `json: true` si la réponse est enveloppée dans { contents }.
      */
     proxies: [
       { nom: 'allorigins (raw)', url: (u) => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u) },
@@ -163,7 +163,7 @@
     const echecs = [];
     for (const essai of essais) {
       try {
-        const reponse = await fetchAvecDelai(essai.construire(url), opts.delaiMs);
+        const reponse = await fetchAvecDelai(essai.construire(url, opts.referer), opts.delaiMs);
         if (!reponse.ok) throw new Error('HTTP ' + reponse.status);
         let texte = await reponse.text();
         if (essai.json) {
@@ -172,6 +172,7 @@
           texte = enveloppe.contents;
         }
         if (texte.trim().length < 20) throw new Error('page vide');
+        global.extraireFilmDernierProxy = essai.nom; // nom du proxy qui a répondu
         return texte;
       } catch (e) {
         echecs.push(essai.nom + ' : ' + (e.name === 'AbortError' ? 'délai dépassé' : e.message));

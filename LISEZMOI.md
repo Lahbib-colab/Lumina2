@@ -6,6 +6,7 @@
 | `index.html` | La plateforme LUMINA (intro, catalogue, lecteur, hors-ligne) |
 | `extraire-film.js` | Extraction du titre, de l'affiche et du flux .m3u8 depuis l'adresse d'une page (via proxy) |
 | `exemple-extraction.html` | Page de démonstration du module d'extraction |
+| `cloudflare-worker.js`, `GUIDE-PROXY.md` | Votre proxy personnel gratuit (Cloudflare Workers) : code à coller + guide pas à pas. Ne sert pas sur GitHub, il se colle dans Cloudflare |
 | `sw.js`, `manifest.webmanifest`, `icon-192.png`, `icon-512.png`, `apple-touch-icon.png` | Application installable et ouverture hors connexion |
 
 ## Mise en ligne
