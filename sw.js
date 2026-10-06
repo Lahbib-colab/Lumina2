@@ -1,8 +1,8 @@
 /* LUMINA : l'application s'ouvre même sans réseau (à la racine d'un domaine ou dans un sous-dossier). */
-const V = 'lumina-v2';
+const V = 'lumina-v3';
 const SCOPE = self.registration.scope;               // ex. https://site.io/  ou  https://site.io/Depot/
 const BASE = new URL(SCOPE).pathname;
-const SHELL = ['', 'manifest.webmanifest', 'icon-192.png', 'apple-touch-icon.png'].map((p) => new URL(p, SCOPE).href);
+const SHELL = ['', 'manifest.webmanifest', 'icon-192.png', 'apple-touch-icon.png', 'extraire-film.js'].map((p) => new URL(p, SCOPE).href);
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(V).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

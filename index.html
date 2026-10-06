@@ -12,6 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="LUMINA">
+<script src="extraire-film.js" defer></script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0d14'/%3E%3Crect x='14' y='6' width='4' height='20' rx='2' fill='%236ff0d8'/%3E%3C/svg%3E">
 <style>
 :root{
@@ -232,6 +233,11 @@ dialog::backdrop{background:rgba(4,6,10,.8)}
 .form .cand{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:8px;align-items:center;color:var(--text);margin:0}
 .form .cand input{width:18px;min-height:18px;padding:0;accent-color:var(--beam)}
 .cand code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:.78rem ui-monospace,Menlo,Consolas,monospace;color:var(--mute)}
+.prev{display:grid;grid-template-columns:76px minmax(0,1fr);gap:12px;align-items:start}
+.prev.nop{grid-template-columns:minmax(0,1fr)}
+.prev img{width:76px;aspect-ratio:2/3;object-fit:cover;border-radius:7px;background:var(--panel);box-shadow:0 0 0 1px #ffffff14}
+.prev .pm{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:.8rem;color:var(--mute);margin-top:2px}
+.prev p{margin:6px 0 0;color:var(--mute);font-size:.84rem;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .badge{font-size:.72rem;border:1px solid #ffffff40;border-radius:5px;padding:0 6px;color:var(--text)}
 .mini{min-height:32px;padding:0 10px;border:1px solid var(--edge);border-radius:8px;font-size:.82rem;color:var(--text)}
 .mini:hover{border-color:var(--mute)}
@@ -354,6 +360,7 @@ dialog::backdrop{background:rgba(4,6,10,.8)}
     <label for="sTok">Jeton (LUMINA_TOKEN)</label>
     <input id="sTok" type="password" autocomplete="off">
     <label class="chk"><input type="checkbox" id="sAlways"> Toujours convertir via le serveur</label>
+    <label class="chk"><input type="checkbox" id="sProxy"> Sans serveur, lire les pages via un proxy public (api.allorigins.win)</label>
     <p class="err" id="sMsg" role="status"></p>
     <div class="acts">
       <button type="button" class="btn line" id="sTest">Tester</button>
@@ -602,7 +609,7 @@ const HLS = (() => {
 /* ===== Extraction de flux vidéo depuis une page ===== */
 'use strict';
 /**
- * Extraction de liens vidéo (.m3u8 / .mp4) depuis le code HTML d'une page.
+ * Extraction depuis le code HTML d'une page : flux vidéo (.m3u8 / .mp4), titre, couverture, descriptif, année, genres, durée.
  * Fonction pure, sans dépendance : utilisée par le serveur (Node) et par la plateforme LUMINA (navigateur).
  */
 function decodeEntities(s) {
@@ -611,13 +618,40 @@ function decodeEntities(s) {
     .replace(/&#x([0-9a-f]+);/gi, (m, n) => String.fromCharCode(parseInt(n, 16)))
     .replace(/&eacute;/g, 'é').replace(/&egrave;/g, 'è').replace(/&agrave;/g, 'à').replace(/&ccedil;/g, 'ç')
     .replace(/&ecirc;/g, 'ê').replace(/&ocirc;/g, 'ô').replace(/&icirc;/g, 'î').replace(/&ucirc;/g, 'û')
+    .replace(/&rsquo;|&lsquo;/g, "'").replace(/&hellip;/g, '…').replace(/&laquo;/g, '«').replace(/&raquo;/g, '»')
     .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
 }
+const stripTags = (h) => decodeEntities(String(h).replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, ' '));
+
+function isoDuration(s) {
+  const m = /^P(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/i.exec(String(s || '').trim());
+  return m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0;
+}
+function fmtDuration(sec) {
+  sec = Math.round(sec);
+  if (!sec || sec < 60) return '';
+  const m = Math.round(sec / 60);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}` : `${m} min`;
+}
+
+/** Données structurées (JSON-LD) : la source la plus fiable quand elle existe. */
+function ldMovie(html) {
+  const nodes = [];
+  for (const m of String(html).matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const j = JSON.parse(m[1].trim());
+      (Array.isArray(j) ? j : [j]).forEach((x) => { if (x && x['@graph']) nodes.push(...x['@graph']); else if (x) nodes.push(x); });
+    } catch (e) { /* JSON invalide : ignoré */ }
+  }
+  return nodes.find((n) => /Movie|VideoObject|TVSeries|TVEpisode|Episode|CreativeWork/i.test([].concat(n['@type'] || []).join(' '))) || null;
+}
+const firstUrl = (v) => (Array.isArray(v) ? firstUrl(v[0]) : v && typeof v === 'object' ? v.url || v.contentUrl || '' : v || '');
 
 function extractFromHtml(html, baseUrl) {
+  html = String(html);
   // Les URLs sont souvent échappées dans le JavaScript de la page (https:\/\/…, \u0026).
-  const text = String(html).replace(/\\u0026/gi, '&').replace(/\\u002F/gi, '/').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+  const text = html.replace(/\\u0026/gi, '&').replace(/\\u002F/gi, '/').replace(/\\\//g, '/').replace(/&amp;/g, '&');
   const found = new Map();
   const resolve = (raw) => { try { return new URL(String(raw).trim(), baseUrl).href; } catch (e) { return null; } };
   const add = (raw, via) => {
@@ -632,20 +666,46 @@ function extractFromHtml(html, baseUrl) {
   for (const m of text.matchAll(/["'(]((?!https?:)[^"'\s<>()]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>()]*)?)["')]/gi)) add(m[1], 'page');
 
   const meta = (prop) => {
-    const a = new RegExp('<meta[^>]+(?:property|name)=["\']' + prop + '["\'][^>]*content=["\']([^"\']*)["\']', 'i').exec(html);
-    const b = new RegExp('<meta[^>]+content=["\']([^"\']*)["\'][^>]*(?:property|name)=["\']' + prop + '["\']', 'i').exec(html);
+    const a = new RegExp('<meta[^>]+(?:property|name|itemprop)=["\']' + prop + '["\'][^>]*content=["\']([^"\']*)["\']', 'i').exec(html);
+    const b = new RegExp('<meta[^>]+content=["\']([^"\']*)["\'][^>]*(?:property|name|itemprop)=["\']' + prop + '["\']', 'i').exec(html);
     return (a && a[1]) || (b && b[1]) || '';
   };
-  let title = meta('og:title');
+  const ld = ldMovie(html) || {};
+
+  let title = meta('og:title') || ld.name || '';
   if (!title) { const t = /<title[^>]*>([^<]*)<\/title>/i.exec(html); title = t ? t[1] : ''; }
-  let poster = meta('og:image');
+
+  let poster = meta('og:image') || firstUrl(ld.image) || firstUrl(ld.thumbnailUrl) || meta('twitter:image');
   if (!poster) { const p = /class=["'][^"']*film-detail-poster[^"']*["'][\s\S]*?<img[^>]+src=["']([^"']+)["']/i.exec(html); poster = p ? p[1] : ''; }
   if (!poster) { const p = /<video[^>]+poster=["']([^"']+)["']/i.exec(html); poster = p ? p[1] : ''; }
 
-  const iframes = [];
-  for (const m of String(html).matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) { const u = resolve(decodeEntities(m[1])); if (u && /^https?:/i.test(u) && !iframes.includes(u)) iframes.push(u); }
+  let description = meta('og:description') || meta('description') || meta('twitter:description') || ld.description || '';
+  description = decodeEntities(String(description).replace(/<[^>]+>/g, ' '));
+  if (description.length < 25) {
+    // Dernier recours : un bloc dont la classe évoque un synopsis.
+    const d = /<(?:p|div|section)[^>]+(?:class|id|itemprop)=["'][^"']*(?:synopsis|description|overview|storyline|plot|summary|resume|resumé)[^"']*["'][^>]*>([\s\S]*?)<\/(?:p|div|section)>/i.exec(html);
+    const t = d ? stripTags(d[1]) : '';
+    if (t.length >= 25) description = t;
+  }
+  if (description.length < 25) description = '';
+  if (description.length > 600) description = description.slice(0, 597).replace(/\s+\S*$/, '') + '…';
 
-  return { title: decodeEntities(title), poster: poster ? resolve(decodeEntities(poster)) || '' : '', candidates: sortCandidates([...found.values()]), iframes };
+  let year = '';
+  const dp = String(ld.datePublished || ld.dateCreated || meta('og:video:release_date') || meta('video:release_date') || meta('datePublished') || '');
+  const ym = /(19|20)\d{2}/.exec(dp);
+  if (ym) year = +ym[0];
+
+  const genres = [].concat(ld.genre || meta('og:video:tag') || []).flatMap((g) => String(g).split(/[,/|]/)).map((g) => decodeEntities(g)).filter(Boolean).slice(0, 4);
+
+  const secs = isoDuration(ld.duration) || +meta('og:video:duration') || +meta('video:duration') || 0;
+
+  const iframes = [];
+  for (const m of html.matchAll(/<iframe[^>]+src=["']([^"']+)["']/gi)) { const u = resolve(decodeEntities(m[1])); if (u && /^https?:/i.test(u) && !iframes.includes(u)) iframes.push(u); }
+
+  return {
+    title: decodeEntities(title), poster: poster ? resolve(decodeEntities(poster)) || '' : '', description, year, genres,
+    duration: fmtDuration(secs), candidates: sortCandidates([...found.values()]), iframes,
+  };
 }
 
 function sortCandidates(list) {
@@ -653,7 +713,7 @@ function sortCandidates(list) {
   return list.map((c, i) => ({ c, i })).sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i).map((x) => x.c);
 }
 
-if (typeof module !== 'undefined') module.exports = { extractFromHtml, sortCandidates, decodeEntities };
+if (typeof module !== 'undefined') module.exports = { extractFromHtml, sortCandidates, decodeEntities, fmtDuration };
 </script>
 
 <script>
@@ -758,7 +818,7 @@ function art(item) {
   return svg;
 }
 function coverHtml(item) {
-  if (item.cover) return `<img src="${esc(item.cover)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{innerHTML:window.__art('${esc(item.id)}')}).firstChild)">`;
+  if (item.cover) return `<img src="${esc(item.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{innerHTML:window.__art('${esc(item.id)}')}).firstChild)">`;
   return art(item);
 }
 window.__art = (id) => { const it = itemById(id); return it ? art(it) : ''; };
@@ -1280,8 +1340,10 @@ function friendly(e, it) {
   const hasSrv = !!srvCfg().base;
   if (e.code === 'cors' || (e instanceof TypeError)) {
     return hasSrv ? 'Serveur injoignable ou source bloquée. Vérifiez l\'adresse du serveur (icône serveur en haut de la page).'
-      : 'La source bloque la lecture depuis un navigateur (CORS). Configurez un serveur LUMINA Offline avec l\'icône serveur en haut de la page : il ira la chercher à votre place.';
+      : (proxyOn() ? 'La source bloque la lecture depuis un navigateur (CORS). Configurez un serveur LUMINA avec l\'icône serveur en haut de la page : il ira la chercher à votre place.'
+        : 'La source bloque la lecture depuis un navigateur (CORS). Activez le proxy public ou configurez un serveur LUMINA avec l\'icône serveur en haut de la page.');
   }
+  if (e.code === 'PAGE_INACCESSIBLE') return "La page n'a pas pu être lue, même via le proxy public (il peut être indisponible ou refuser ce site). Un serveur LUMINA est plus fiable : icône serveur en haut de la page.";
   if (e.name === 'QuotaExceededError') return 'Espace insuffisant dans le navigateur.';
   if (it && it.page && /HTTP (401|403|404|410)|403|404|410/.test(e.message)) return 'Le lien du flux a expiré ou est refusé. Ouvrez la fiche et appuyez sur « Actualiser le lien ».';
   return e.message || 'Erreur inconnue.';
@@ -1316,43 +1378,63 @@ async function downloadOffline(it, opts = {}) {
 }
 
 /* ================================ Extraction du flux ================================ */
+const proxyOn = () => store.get('lumina.proxy', true) !== false;
+/** Lit le HTML d'une page : accès direct (si la source autorise le CORS), sinon proxy public. */
+async function pageText(url) {
+  try { const r = await fetch(url); if (r.ok) return { text: await r.text(), via: 'direct' }; } catch (e) { /* CORS : on essaie le proxy */ }
+  if (proxyOn() && typeof recupererHtmlProxy === 'function') return { text: await recupererHtmlProxy(url), via: 'proxy' };
+  throw Object.assign(new Error('cors'), { code: 'cors' });
+}
 const isDirect = (u) => /\.(m3u8|mp4)(\?|#|$)/i.test(u);
 async function extractSource(pageUrl) {
   let u; try { u = new URL(pageUrl); if (!/^https?:$/.test(u.protocol)) throw 0; } catch (e) { throw new Error('Lien invalide (http ou https attendu).'); }
-  if (isDirect(u.pathname + u.search)) return { pageUrl: '', title: '', poster: '', candidates: [{ url: u.href, type: /\.m3u8/i.test(u.pathname + u.search) ? 'hls' : 'mp4', via: 'direct' }] };
+  if (isDirect(u.pathname + u.search)) return { pageUrl: '', title: '', poster: '', description: '', year: '', genres: [], duration: '', candidates: [{ url: u.href, type: /\.m3u8/i.test(u.pathname + u.search) ? 'hls' : 'mp4', via: 'direct' }] };
   let serverErr = null;
-  if (srvCfg().base) { try { return await srvJson('/api/extract?url=' + encodeURIComponent(u.href)); } catch (e) { serverErr = e; } }
+  if (srvCfg().base) { try { const r = await srvJson('/api/extract?url=' + encodeURIComponent(u.href)); r.via = 'serveur'; return r; } catch (e) { serverErr = e; } }
   try {
-    const res = await fetch(u.href);
-    if (!res.ok) throw new Error('Page inaccessible (HTTP ' + res.status + ').');
-    const out = extractFromHtml(await res.text(), u.href);
+    const first = await pageText(u.href);
+    const out = extractFromHtml(first.text, u.href);
+    let via = first.via;
     if (!out.candidates.some((c) => c.type === 'hls')) {
       for (const f of out.iframes.slice(0, 3)) {
         try {
-          const sub = extractFromHtml(await (await fetch(f)).text(), f);
+          const sub = extractFromHtml((await pageText(f)).text, f);
           sub.candidates.forEach((c) => { if (!out.candidates.some((x) => x.url === c.url)) out.candidates.push({ ...c, via: 'iframe' }); });
-          if (!out.title && sub.title) out.title = sub.title;
-          if (!out.poster && sub.poster) out.poster = sub.poster;
-        } catch (e) { /* iframe illisible depuis le navigateur */ }
+          for (const k of ['title', 'poster', 'description', 'year', 'duration']) if (!out[k] && sub[k]) out[k] = sub[k];
+          if (!out.genres.length && sub.genres.length) out.genres = sub.genres;
+        } catch (e) { /* iframe illisible */ }
       }
       out.candidates = sortCandidates(out.candidates);
     }
-    return { pageUrl: u.href, title: out.title, poster: out.poster, candidates: out.candidates };
+    return { pageUrl: u.href, title: out.title, poster: out.poster, description: out.description, year: out.year, genres: out.genres, duration: out.duration, candidates: out.candidates, via };
   } catch (e) {
     if (serverErr) throw serverErr;
-    if (e instanceof TypeError) throw Object.assign(new Error('cors'), { code: 'cors' });
     throw e;
   }
 }
 
 /* ================================ Ajouter une vidéo ================================ */
 const dlg = $('addDlg');
-let ext = null, sel = '';
+let ext = null, sel = '', extractSeq = 0, debounceT = 0, pasted = false;
+let autoVals = { title: '', desc: '', cover: '' };   // dernières valeurs remplies automatiquement : une nouvelle adresse les remplace
+const GENRE_ALIASES = { 'science-fiction': 'Science-fiction', 'science fiction': 'Science-fiction', 'sci-fi': 'Science-fiction', scifi: 'Science-fiction', sf: 'Science-fiction', animation: 'Animation', anime: 'Animation',
+  aventure: 'Aventure', adventure: 'Aventure', action: 'Aventure', drame: 'Drame', drama: 'Drame', thriller: 'Thriller', suspense: 'Thriller', policier: 'Thriller', crime: 'Thriller',
+  documentaire: 'Documentaire', documentary: 'Documentaire', fantastique: 'Fantastique', fantasy: 'Fantastique', horreur: 'Fantastique', comedie: 'Comédie', comedy: 'Comédie' };
+const mapGenre = (list) => { for (const g of list || []) { const k = norm(g); if (GENRE_ALIASES[k]) return GENRE_ALIASES[k]; } return ''; };
+function fillField(id, key, val) { const el = $(id); if (!val) return; if (!el.value.trim() || el.value === autoVals[key]) { el.value = val; autoVals[key] = val; } }
+
 function showFound(html, cls) { const f = $('aFound'); f.hidden = !html; f.className = 'found ' + (cls || ''); f.innerHTML = html || ''; }
+function previewHtml(x) {
+  if (!x.title && !x.description && !x.poster) return '';
+  const meta = [x.year, x.duration, (x.genres || []).slice(0, 3).join(', ')].filter(Boolean).map((m) => `<span>${esc(m)}</span>`).join('');
+  return `<div class="prev${x.poster ? '' : ' nop'}">${x.poster ? `<img src="${esc(x.poster)}" alt="" referrerpolicy="no-referrer" onerror="this.parentNode.classList.add('nop');this.remove()">` : ''}`
+    + `<div>${x.title ? `<div class="tit">${esc(x.title)}</div>` : ''}${meta ? `<div class="pm">${meta}</div>` : ''}${x.description ? `<p>${esc(x.description)}</p>` : ''}</div></div>`;
+}
 function renderFound() {
   if (!ext || !ext.candidates.length) { showFound(''); $('aOffWrap').hidden = true; return; }
   const rows = ext.candidates.map((c, i) => `<label class="cand"><input type="radio" name="cand" value="${i}" ${c.url === sel ? 'checked' : ''}><span class="badge">${c.type === 'hls' ? 'HLS' : 'MP4'}</span><code title="${esc(c.url)}">${esc(c.url)}</code><button type="button" class="mini" data-copy="${i}">Copier</button></label>`).join('');
-  showFound((ext.title ? `<div class="tit">${esc(ext.title)}</div>` : '') + `<div>${ext.candidates.length > 1 ? ext.candidates.length + ' flux trouvés, choisissez-en un :' : 'Flux vidéo trouvé :'}</div>` + rows, 'ok');
+  const noteVia = ext.via === 'proxy' ? '<div class="pm">Page lue via le proxy public api.allorigins.win.</div>' : '';
+  showFound(previewHtml(ext) + noteVia + `<div>${ext.candidates.length > 1 ? ext.candidates.length + ' flux trouvés, choisissez-en un :' : 'Flux vidéo trouvé :'}</div>` + rows, 'ok');
   $('aOffWrap').hidden = false;
   $('aFound').querySelectorAll('input[name=cand]').forEach((r) => r.onchange = () => { sel = ext.candidates[+r.value].url; });
   $('aFound').querySelectorAll('[data-copy]').forEach((b) => b.onclick = async () => { const ok = await copyText(ext.candidates[+b.dataset.copy].url); b.textContent = ok ? 'Copié' : 'Échec'; setTimeout(() => (b.textContent = 'Copier'), 1500); });
@@ -1361,36 +1443,74 @@ async function runExtract() {
   const raw = $('aUrl').value.trim();
   $('aErr').textContent = '';
   if (!raw) { $('aErr').textContent = 'Collez d\'abord un lien.'; return null; }
-  showFound('<div>Recherche du flux vidéo…</div>');
+  const my = ++extractSeq;
+  showFound('<div>Lecture de la page : recherche du flux, de la couverture et du descriptif…</div>');
   $('aExtract').disabled = true;
   try {
-    ext = await extractSource(raw);
-    if (!ext.candidates.length) {
+    const r = await extractSource(raw);
+    if (my !== extractSeq) return null;           // une adresse plus récente a été collée entre-temps
+    if (!r.candidates.length) {
       ext = null; sel = '';
-      showFound("Aucun flux .m3u8 ou .mp4 trouvé dans cette page. Il est peut-être chargé dynamiquement : ouvrez la page, cherchez le lien .m3u8 dans l'onglet Réseau des outils du navigateur et collez-le ici.", 'bad');
+      showFound((previewHtml(r) || '') + "<div>Aucun flux .m3u8 ou .mp4 trouvé dans cette page. Il est peut-être chargé dynamiquement : ouvrez la page, cherchez le lien .m3u8 dans l'onglet Réseau des outils du navigateur et collez-le ici.</div>", 'bad');
       return null;
     }
-    sel = ext.candidates[0].url;
-    if (!$('aTitle').value.trim() && ext.title) $('aTitle').value = ext.title.slice(0, 80);
-    if (!$('aCover').value.trim() && ext.poster) $('aCover').value = ext.poster;
+    ext = r; sel = r.candidates[0].url;
+    fillField('aTitle', 'title', (r.title || '').slice(0, 80));
+    fillField('aDesc', 'desc', (r.description || '').slice(0, 400));
+    fillField('aCover', 'cover', r.poster);
+    const g = mapGenre(r.genres); if (g) $('aGenre').value = g;
     renderFound();
     return ext;
   } catch (e) {
+    if (my !== extractSeq) return null;
     ext = null; sel = '';
     showFound(esc(friendly(e)) + (srvCfg().base ? '' : '<div><button type="button" class="mini" id="aSrv">Configurer un serveur</button></div>'), 'bad');
     const sb = $('aSrv'); if (sb) sb.onclick = () => { dlg.close(); $('srvBtn').onclick(); };
     return null;
-  } finally { $('aExtract').disabled = false; }
+  } finally { if (my === extractSeq) $('aExtract').disabled = false; }
 }
-$('addBtn').onclick = () => { $('addForm').reset(); ext = null; sel = ''; showFound(''); $('aErr').textContent = ''; $('aOffWrap').hidden = true; dlg.showModal(); $('aUrl').focus(); };
+
+/* Couverture : copiée dans l'appareil (réduite), pour qu'elle reste affichée même si la source la bloque ou disparaît. */
+async function coverToDataUrl(url, pageUrl) {
+  const grab = async () => {
+    try { const r = await fetch(url, { referrerPolicy: 'no-referrer' }); if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return await r.blob(); } catch (e) { /* CORS : on passe par le serveur */ }
+    if (srvCfg().base) { try { const r = await srvFetch('/api/image?url=' + encodeURIComponent(url) + (pageUrl ? '&referer=' + encodeURIComponent(pageUrl) : '')); if (r.ok) return await r.blob(); } catch (e) { /* ignore */ } }
+    if (!srvCfg().base && proxyOn()) { try { const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url)); if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return await r.blob(); } catch (e) { /* ignore */ } }
+    return null;
+  };
+  const blob = await Promise.race([grab(), sleep(10000).then(() => null)]);
+  if (!blob) return '';
+  return new Promise((resolve) => {
+    const img = new Image(), u = URL.createObjectURL(blob);
+    img.onload = () => {
+      try {
+        const k = Math.min(1, 480 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); resolve(c.toDataURL('image/jpeg', .8));
+      } catch (e) { resolve(''); }
+      URL.revokeObjectURL(u);
+    };
+    img.onerror = () => { URL.revokeObjectURL(u); resolve(''); };
+    img.src = u;
+  });
+}
+
+function resetAdd() { extractSeq++; clearTimeout(debounceT); ext = null; sel = ''; autoVals = { title: '', desc: '', cover: '' }; showFound(''); $('aErr').textContent = ''; $('aOffWrap').hidden = true; $('aExtract').disabled = false; }
+$('addBtn').onclick = () => { $('addForm').reset(); resetAdd(); dlg.showModal(); $('aUrl').focus(); };
 $('aCancel').onclick = () => dlg.close();
 $('aExtract').onclick = runExtract;
-$('aUrl').addEventListener('input', () => { ext = null; sel = ''; showFound(''); $('aOffWrap').hidden = true; if (isDirect($('aUrl').value.trim())) runExtract(); });
+// Dès qu'une adresse est collée, la page est lue automatiquement (pas besoin d'appuyer sur « Extraire »).
+$('aUrl').addEventListener('paste', () => { pasted = true; });
+$('aUrl').addEventListener('input', () => {
+  extractSeq++; clearTimeout(debounceT); ext = null; sel = ''; showFound(''); $('aOffWrap').hidden = true; $('aErr').textContent = '';
+  const v = $('aUrl').value.trim(), fast = pasted || isDirect(v); pasted = false;
+  if (/^https?:\/\/[^\s/]{3,}(?:[/?#]\S*)?$/i.test(v)) debounceT = setTimeout(runExtract, fast ? 150 : 900);
+});
 $('addForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('aErr').textContent = '';
-  const raw = $('aUrl').value.trim();
   $('aSave').disabled = true;
+  const label = $('aSave').textContent;
   try {
     if (!sel) {
       const r = await runExtract();
@@ -1400,15 +1520,17 @@ $('addForm').addEventListener('submit', async (e) => {
     const cand = ext.candidates.find((c) => c.url === sel) || ext.candidates[0];
     const title = $('aTitle').value.trim() || ext.title || '';
     if (!title) { $('aErr').textContent = 'Le titre est obligatoire.'; $('aTitle').focus(); return; }
-    const it = { id: 'u' + Date.now().toString(36), user: true, title: title.slice(0, 80), year: new Date().getFullYear(), type: $('aType').value, genres: [$('aGenre').value],
-      desc: $('aDesc').value.trim() || 'Ajouté à ma bibliothèque.', duration: '', rating: '', src: cand.url, srcType: cand.type, page: ext.pageUrl || '', cover: $('aCover').value.trim() || ext.poster || '' };
+    let cover = $('aCover').value.trim() || ext.poster || '';
+    if (cover && !cover.startsWith('data:')) { $('aSave').textContent = 'Récupération de la couverture…'; cover = (await coverToDataUrl(cover, ext.pageUrl)) || cover; }
+    const it = { id: 'u' + Date.now().toString(36), user: true, title: title.slice(0, 80), year: ext.year || new Date().getFullYear(), type: $('aType').value, genres: [$('aGenre').value],
+      desc: $('aDesc').value.trim() || ext.description || 'Ajouté à ma bibliothèque.', duration: ext.duration || '', rating: '', src: cand.url, srcType: cand.type, page: ext.pageUrl || '', cover };
     if (it.type === 'serie') it.seasons = 1;
     const wantOffline = $('aOff').checked;
     state.user.push(it); store.set('lumina.user', state.user);
     dlg.close(); render(true);
-    toast(`« ${it.title} » ajouté. Flux : ${hostOf(cand.url)}`);
+    toast(`« ${it.title} » ajouté à l'interface.`);
     if (wantOffline) downloadOffline(it, { thenPlay: true }); else play(it);
-  } finally { $('aSave').disabled = false; }
+  } finally { $('aSave').disabled = false; $('aSave').textContent = label; }
 });
 
 async function refreshLink(it) {
@@ -1429,11 +1551,11 @@ function sMsg(t, ok) { const m = $('sMsg'); m.textContent = t; m.className = 'er
 $('srvBtn').onclick = () => {
   const c = srvCfg(), saved = store.get('lumina.server', {});
   $('sUrl').value = saved.url || ''; $('sUrl').placeholder = autoServer ? 'Laisser vide : ce serveur est utilisé automatiquement' : 'http://192.168.1.20:8787';
-  $('sTok').value = c.token; $('sAlways').checked = c.always; sMsg(autoServer ? 'Ce serveur LUMINA est détecté automatiquement.' : '', autoServer);
+  $('sTok').value = c.token; $('sAlways').checked = c.always; $('sProxy').checked = proxyOn(); sMsg(autoServer ? 'Ce serveur LUMINA est détecté automatiquement.' : '', autoServer);
   sdlg.showModal(); $('sTok').focus();
 };
 $('sClose').onclick = () => sdlg.close();
-$('srvForm').addEventListener('submit', (e) => { e.preventDefault(); store.set('lumina.server', { url: $('sUrl').value.trim(), token: $('sTok').value.trim(), always: $('sAlways').checked }); markServer(); sdlg.close(); toast(srvCfg().base ? 'Réglages du serveur enregistrés.' : 'Serveur désactivé.'); });
+$('srvForm').addEventListener('submit', (e) => { e.preventDefault(); store.set('lumina.proxy', $('sProxy').checked); store.set('lumina.server', { url: $('sUrl').value.trim(), token: $('sTok').value.trim(), always: $('sAlways').checked }); markServer(); sdlg.close(); toast(srvCfg().base ? 'Réglages du serveur enregistrés.' : 'Serveur désactivé.'); });
 $('sTest').onclick = async () => {
   store.set('lumina.server', { url: $('sUrl').value.trim(), token: $('sTok').value.trim(), always: $('sAlways').checked });
   sMsg('Test en cours…');

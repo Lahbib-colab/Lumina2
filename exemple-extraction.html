@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Extraire le flux d'une page de film</title>
+<style>
+  :root { color-scheme: dark; --ink:#10141c; --panel:#181e2b; --edge:#283149; --text:#e6ecf7; --mute:#8c97b0; --beam:#6ff0d8; --alert:#ff8272; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+         background: var(--ink); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 8px 0 16px; }
+  form { display: grid; gap: 10px; background: var(--panel); border: 1px solid var(--edge); border-radius: 12px; padding: 16px; }
+  label { color: var(--mute); font-size: .9rem; }
+  input { width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--edge); border-radius: 10px; background: var(--ink); color: var(--text); font: inherit; }
+  button { min-height: 46px; border: 0; border-radius: 10px; background: var(--beam); color: #06201b; font: 600 1rem inherit; font-family: inherit; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: progress; }
+  button.secondaire { background: transparent; color: var(--text); border: 1px solid var(--edge); min-height: 40px; padding: 0 14px; }
+  #statut { min-height: 1.4em; margin: 12px 0; color: var(--mute); }
+  #statut.erreur { color: var(--alert); }
+  #resultat { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 16px; background: var(--panel); border: 1px solid var(--edge); border-radius: 12px; padding: 16px; }
+  #resultat[hidden] { display: none; }
+  #affiche { width: 120px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 8px; background: var(--ink); }
+  #titre { margin: 0 0 8px; font-size: 1.15rem; overflow-wrap: anywhere; }
+  .flux { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  code { display: block; width: 100%; padding: 8px 10px; background: var(--ink); border: 1px solid var(--edge); border-radius: 8px; color: var(--mute); font-size: .8rem; overflow-wrap: anywhere; }
+  .badge { font-size: .75rem; border: 1px solid var(--edge); border-radius: 6px; padding: 2px 8px; }
+  ul.avert { margin: 8px 0 0; padding-left: 18px; color: var(--mute); font-size: .85rem; }
+  @media (max-width: 480px) { #resultat { grid-template-columns: 1fr; } #affiche { width: 96px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Extraire le flux d'une page de film</h1>
+
+  <!-- 1) Le formulaire : un champ pour l'adresse et un bouton d'extraction -->
+  <form id="form-extraction" novalidate>
+    <label for="url-film">Adresse de la page du film</label>
+    <input id="url-film" name="url" type="url" required inputmode="url" autocomplete="off" spellcheck="false"
+           placeholder="https://exemple.com/film/mon-film">
+    <button id="btn-extraire" type="submit">Extraire</button>
+  </form>
+
+  <!-- 2) Zone d'état (progression ou erreur) -->
+  <p id="statut" role="status" aria-live="polite"></p>
+
+  <!-- 3) Résultat -->
+  <section id="resultat" hidden>
+    <img id="affiche" alt="" referrerpolicy="no-referrer">
+    <div>
+      <h2 id="titre"></h2>
+      <div class="flux">
+        <span class="badge" id="type-flux"></span>
+        <code id="flux"></code>
+        <button type="button" id="btn-copier" class="secondaire">Copier le lien</button>
+      </div>
+      <ul class="avert" id="avertissements"></ul>
+    </div>
+  </section>
+</main>
+
+<!-- 4) Le module d'extraction -->
+<script src="extraire-film.js"></script>
+
+<!-- 5) Le branchement du formulaire -->
+<script>
+(() => {
+  const formulaire = document.getElementById('form-extraction');
+  const champUrl   = document.getElementById('url-film');
+  const bouton     = document.getElementById('btn-extraire');
+  const statut     = document.getElementById('statut');
+  const resultat   = document.getElementById('resultat');
+
+  const LIBELLES = {
+    'm3u8':        'Flux .m3u8 (direct)',
+    'm3u8-iframe': 'Flux .m3u8 (trouvé dans une iframe)',
+    'iframe':      'Iframe (dernier recours)',
+  };
+
+  function afficherStatut(message, erreur = false) {
+    statut.textContent = message;
+    statut.classList.toggle('erreur', erreur);
+  }
+
+  /** Affiche le résultat. textContent et .src uniquement : jamais de HTML externe injecté dans la page. */
+  function afficherResultat(film) {
+    document.getElementById('titre').textContent = film.titre || '(titre introuvable)';
+
+    const affiche = document.getElementById('affiche');
+    if (film.affiche) { affiche.src = film.affiche; affiche.hidden = false; } else { affiche.removeAttribute('src'); affiche.hidden = true; }
+
+    document.getElementById('type-flux').textContent = film.typeFlux ? LIBELLES[film.typeFlux] : 'Aucun flux';
+    document.getElementById('flux').textContent = film.flux || '—';
+    document.getElementById('btn-copier').hidden = !film.flux;
+
+    const liste = document.getElementById('avertissements');
+    liste.replaceChildren(...film.avertissements.map((a) => Object.assign(document.createElement('li'), { textContent: a })));
+
+    resultat.hidden = false;
+  }
+
+  formulaire.addEventListener('submit', async (evenement) => {
+    evenement.preventDefault();
+    resultat.hidden = true;
+    bouton.disabled = true;
+    afficherStatut('Lecture de la page…');
+
+    try {
+      const film = await extraireFilm(champUrl.value);
+      afficherResultat(film);
+      afficherStatut(film.flux ? 'Extraction terminée.' : 'Page lue, mais aucun flux vidéo n\'a été trouvé.', !film.flux);
+    } catch (erreur) {
+      afficherStatut(erreur instanceof ErreurExtraction ? erreur.message : 'Erreur inattendue : ' + erreur.message, true);
+    } finally {
+      bouton.disabled = false;
+    }
+  });
+
+  document.getElementById('btn-copier').addEventListener('click', async (e) => {
+    const lien = document.getElementById('flux').textContent;
+    try { await navigator.clipboard.writeText(lien); e.target.textContent = 'Copié'; }
+    catch { e.target.textContent = 'Copie impossible'; }
+    setTimeout(() => { e.target.textContent = 'Copier le lien'; }, 1500);
+  });
+})();
+</script>
+</body>
+</html>
