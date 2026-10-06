@@ -24,6 +24,16 @@ Safari > Partager > **Sur l'écran d'accueil**. Si LUMINA était déjà install�
   api.allorigins.win (désactivable : icône serveur > case « proxy public »).
 - Ajouter une vidéo avec un lien .m3u8 ou .mp4 direct.
 
+## Quand le lien ne s'extrait pas depuis l'adresse de la page
+Certaines pages ne révèlent le flux .m3u8 qu'une fois la lecture lancée dans le navigateur.
+Dans LUMINA : **+ > « Le lien ne marche pas ? Capturer depuis la page ouverte »** installe un favori « Capturer vers LUMINA ».
+Ouvrez ensuite la page de la vidéo dans le même navigateur, lancez la lecture, appuyez sur le favori : LUMINA s'ouvre avec le
+flux, le titre et l'affiche déjà remplis. (À utiliser pour une vidéo qui vous appartient.)
+
+## Une vidéo qui se trouve sur l'appareil
+**+ > Importer un fichier vidéo de cet appareil** (MP4, MOV, WebM) : elle est stockée dans l'application et se lit sans connexion.
+Sur iPhone, ajoutez LUMINA à l'écran d'accueil : sinon Safari peut vider le stockage d'un site peu utilisé.
+
 ## Ce qui demande un serveur LUMINA (facultatif)
 La lecture directe ou la conversion en MP4 de sources qui bloquent les navigateurs (CORS).
 Hébergez le serveur (archive `lumina-offline.zip`, guide `DEPLOY.md`) en **https**, puis saisissez son adresse et son jeton
